@@ -15,76 +15,170 @@
 (function () {
   'use strict';
 
-  const DEBUG = false;
-  const MAX_TRIES = 20;
-  const INTERVAL_MS = 700;
+  // iframe内では動かさない
+  if (window.top !== window.self) {
+    return;
+  }
+
+  if (window.__twicasAutoAnonymousCommentOnRunning) {
+    console.warn('[Twicas Auto Anonymous] already running. skipped.');
+    return;
+  }
+
+  window.__twicasAutoAnonymousCommentOnRunning = true;
+
+  const DEBUG = true;
+
+  const MAX_TRIES = 30;
+  const RETRY_MS = 700;
+  const MENU_WAIT_MS = 500;
+
+  const TEXT_ON = '匿名コメントをONにする';
+  const TEXT_OFF = '匿名コメントをOFFにする';
 
   let tries = 0;
-  let timer = null;
+  let done = false;
   let working = false;
 
   function log(...args) {
     if (DEBUG) console.log('[Twicas Auto Anonymous]', ...args);
   }
 
-  function stop() {
-    if (timer) {
-      clearInterval(timer);
-      timer = null;
-    }
+  function normalizeText(text) {
+    return (text || '').replace(/\s+/g, '').trim();
   }
 
-  function getCommentApp() {
-    return document.querySelector('#comment-list-app');
+  function isVisible(el) {
+    if (!el) return false;
+
+    const style = window.getComputedStyle(el);
+    const rect = el.getBoundingClientRect();
+
+    return (
+      style.display !== 'none' &&
+      style.visibility !== 'hidden' &&
+      rect.width > 0 &&
+      rect.height > 0
+    );
+  }
+
+  function clickOnce(el) {
+    if (!el) return;
+    el.click();
   }
 
   function isAnonymousAllowed() {
-    const app = getCommentApp();
+    const app = document.querySelector('#comment-list-app');
 
-    if (!app) return true;
-
-    if (app.dataset.isAnonymousCommentAllowed === 'false') {
-      log('この枠は匿名コメント不可');
+    if (app && app.dataset.isAnonymousCommentAllowed === 'false') {
+      log('Anonymous comments are not allowed on this live.');
       return false;
     }
 
     return true;
   }
 
-  function findMenuButton() {
-    const buttons = Array.from(document.querySelectorAll('button'));
+  function findCommentTextarea() {
+    const textareas = Array.from(document.querySelectorAll('textarea'));
 
-    return buttons.find((button) => {
-      const label = button.getAttribute('aria-label') || '';
-      const classes = button.className || '';
-
-      return (
-        label.includes('その他') ||
-        classes.includes('tw-comment-post-menu-others') ||
-        classes.includes('tw-button-borderless')
-      );
-    });
+    return textareas.find((textarea) => {
+      const placeholder = textarea.getAttribute('placeholder') || '';
+      return isVisible(textarea) && placeholder.includes('コメント');
+    }) || null;
   }
 
-  function findAnonymousOnItem() {
-    const items = Array.from(document.querySelectorAll('a, button'));
+  function findCommentForm() {
+    const textarea = findCommentTextarea();
+    if (!textarea) return null;
 
-    return items.find((el) => {
-      const text = (el.textContent || '').trim();
-      return text === '匿名コメントをONにする';
-    });
+    return textarea.closest('form');
   }
 
-  function findAnonymousOffItem() {
-    const items = Array.from(document.querySelectorAll('a, button'));
+  function findCommentMenuWrap() {
+    const form = findCommentForm();
+    if (!form) return null;
 
-    return items.find((el) => {
-      const text = (el.textContent || '').trim();
-      return text === '匿名コメントをOFFにする';
-    });
+    return form.querySelector('.tw-comment-post-menu-others');
   }
 
-  function closeMenuQuietly() {
+  function findCommentMenuButton() {
+    const wrap = findCommentMenuWrap();
+    if (!wrap) return null;
+
+    return (
+      wrap.querySelector('button[aria-label="その他"]') ||
+      wrap.querySelector('button[aria-haspopup="true"]') ||
+      wrap.querySelector('button')
+    );
+  }
+
+  function findClickableTextItemInCommentMenu(text) {
+    const wrap = findCommentMenuWrap();
+    if (!wrap) return null;
+
+    const target = normalizeText(text);
+
+    // まず本命。クリックできる a / button だけを探す
+    const clickableItems = Array.from(wrap.querySelectorAll('a, button'))
+      .filter(isVisible);
+
+    const direct = clickableItems.find((el) => {
+      return normalizeText(el.textContent) === target;
+    });
+
+    if (direct) {
+      log('direct clickable item found:', direct);
+      return direct;
+    }
+
+    // 保険。li/spanに文字が入っていた場合、その中のa/buttonを返す
+    const textHolders = Array.from(wrap.querySelectorAll('li, span'))
+      .filter(isVisible);
+
+    const holder = textHolders.find((el) => {
+      return normalizeText(el.textContent) === target;
+    });
+
+    if (!holder) return null;
+
+    const childClickable = holder.querySelector('a, button');
+    if (childClickable) {
+      log('child clickable item found:', childClickable);
+      return childClickable;
+    }
+
+    const parentClickable = holder.closest('a, button');
+    if (parentClickable) {
+      log('parent clickable item found:', parentClickable);
+      return parentClickable;
+    }
+
+    // li自体は原則クリックしない
+    log('text found but no clickable element:', holder);
+    return null;
+  }
+
+  function logMenuTexts() {
+    const wrap = findCommentMenuWrap();
+
+    if (!wrap) {
+      log('comment menu wrap: null');
+      return;
+    }
+
+    const texts = Array.from(wrap.querySelectorAll('a, button, li, span'))
+      .map((el) => normalizeText(el.textContent))
+      .filter(Boolean);
+
+    log('comment menu texts:', texts);
+  }
+
+  function closeMenu(menuButton) {
+    if (menuButton && menuButton.getAttribute('aria-expanded') === 'true') {
+      clickOnce(menuButton);
+      return;
+    }
+
     document.dispatchEvent(new KeyboardEvent('keydown', {
       key: 'Escape',
       code: 'Escape',
@@ -94,70 +188,76 @@
   }
 
   function tryEnableAnonymous() {
-    if (working) return;
+    if (done || working) return;
+
+    tries++;
+    log('try:', tries);
 
     if (!isAnonymousAllowed()) {
-      stop();
+      done = true;
+      return;
+    }
+
+    const form = findCommentForm();
+    log('comment form:', form);
+
+    const menuButton = findCommentMenuButton();
+    log('comment menu button:', menuButton);
+
+    if (!menuButton) {
+      if (tries < MAX_TRIES) {
+        setTimeout(tryEnableAnonymous, RETRY_MS);
+      }
       return;
     }
 
     working = true;
 
-    const alreadyOn = findAnonymousOffItem();
-    if (alreadyOn) {
-      log('匿名コメントは既にON');
-      closeMenuQuietly();
-      stop();
-      working = false;
-      return;
+    log('opening comment menu. before expanded:', menuButton.getAttribute('aria-expanded'));
+
+    if (menuButton.getAttribute('aria-expanded') !== 'true') {
+      clickOnce(menuButton);
     }
-
-    const menuButton = findMenuButton();
-
-    if (!menuButton) {
-      log('三点メニューボタンが見つからない');
-      working = false;
-      return;
-    }
-
-    log('三点メニューを開く');
-    menuButton.click();
 
     setTimeout(() => {
-      const alreadyOnAfterOpen = findAnonymousOffItem();
-      if (alreadyOnAfterOpen) {
-        log('匿名コメントは既にON');
-        closeMenuQuietly();
-        stop();
+      log('after expanded:', menuButton.getAttribute('aria-expanded'));
+      logMenuTexts();
+
+      const offItem = findClickableTextItemInCommentMenu(TEXT_OFF);
+
+      if (offItem) {
+        log('anonymous already ON.');
+        closeMenu(menuButton);
+        done = true;
         working = false;
         return;
       }
 
-      const onItem = findAnonymousOnItem();
+      const onItem = findClickableTextItemInCommentMenu(TEXT_ON);
 
       if (!onItem) {
-        log('匿名コメントON項目が見つからない');
-        closeMenuQuietly();
+        log('anonymous ON item not found.');
+        closeMenu(menuButton);
         working = false;
+
+        if (tries < MAX_TRIES) {
+          setTimeout(tryEnableAnonymous, RETRY_MS);
+        }
+
         return;
       }
 
-      log('匿名コメントをONにする');
-      onItem.click();
+      log('click anonymous ON item:', onItem);
+      clickOnce(onItem);
 
-      stop();
-      working = false;
-    }, 250);
+      setTimeout(() => {
+        closeMenu(menuButton);
+        done = true;
+        working = false;
+        log('finished.');
+      }, 300);
+    }, MENU_WAIT_MS);
   }
 
-  timer = setInterval(() => {
-    tries++;
-
-    tryEnableAnonymous();
-
-    if (tries >= MAX_TRIES) {
-      log('最大試行回数に達したので終了');
-      stop();
-    }
-  }, INTERVAL_MS);
+  setTimeout(tryEnableAnonymous, 1000);
 })();
