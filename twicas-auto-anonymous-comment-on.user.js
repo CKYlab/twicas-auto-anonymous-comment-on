@@ -27,7 +27,7 @@
 
   window.__twicasAutoAnonymousCommentOnRunning = true;
 
-  const DEBUG = true;
+  const DEBUG = false;
 
   const MAX_TRIES = 30;
   const RETRY_MS = 700;
