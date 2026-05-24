@@ -4,7 +4,7 @@
 // @description  ツイキャスの配信ページで匿名コメントを自動でONにします。X投稿チェックは操作しません。
 // @description:en Automatically enables anonymous comments on TwitCasting live pages. Does not touch the X post checkbox.
 // @namespace    https://github.com/CKYlab/twicas-auto-anonymous-comment-on
-// @version      0.1.0
+// @version      0.1.1
 // @license      MIT
 // @match        https://twitcasting.tv/*
 // @match        https://ja.twitcasting.tv/*
@@ -12,46 +12,40 @@
 // @grant        none
 // ==/UserScript==
 
-(function () {
+(() => {
   'use strict';
 
-  // iframe内では動かさない
-  if (window.top !== window.self) {
-    return;
-  }
-
-  if (window.__twicasAutoAnonymousCommentOnRunning) {
-    console.warn('[Twicas Auto Anonymous] already running. skipped.');
-    return;
-  }
-
+  if (window.top !== window.self) return;
+  if (window.__twicasAutoAnonymousCommentOnRunning) return;
   window.__twicasAutoAnonymousCommentOnRunning = true;
-
-  const DEBUG = false;
 
   const MAX_TRIES = 30;
   const RETRY_MS = 700;
   const MENU_WAIT_MS = 500;
 
-  const TEXT_ON = '匿名コメントをONにする';
-  const TEXT_OFF = '匿名コメントをOFFにする';
+  const ON_TEXTS = [
+    '匿名コメントをONにする',
+    'Enable anonymous comments',
+    '익명 댓글 활성화',
+    '啟用匿名留言'
+  ];
+
+  const OFF_TEXTS = [
+    '匿名コメントをOFFにする',
+    'Disable anonymous comments',
+    '익명 댓글 비활성화',
+    '停用匿名留言'
+  ];
 
   let tries = 0;
   let done = false;
   let working = false;
 
-  function log(...args) {
-    if (DEBUG) console.log('[Twicas Auto Anonymous]', ...args);
-  }
+  const norm = (text) => (text || '').replace(/\s+/g, '').trim();
 
-  function normalizeText(text) {
-    return (text || '').replace(/\s+/g, '').trim();
-  }
-
-  function isVisible(el) {
+  const isVisible = (el) => {
     if (!el) return false;
-
-    const style = window.getComputedStyle(el);
+    const style = getComputedStyle(el);
     const rect = el.getBoundingClientRect();
 
     return (
@@ -60,122 +54,39 @@
       rect.width > 0 &&
       rect.height > 0
     );
-  }
+  };
 
-  function clickOnce(el) {
-    if (!el) return;
-    el.click();
-  }
-
-  function isAnonymousAllowed() {
-    const app = document.querySelector('#comment-list-app');
-
-    if (app && app.dataset.isAnonymousCommentAllowed === 'false') {
-      log('Anonymous comments are not allowed on this live.');
-      return false;
-    }
-
-    return true;
-  }
-
-  function findCommentTextarea() {
-    const textareas = Array.from(document.querySelectorAll('textarea'));
-
-    return textareas.find((textarea) => {
-      const placeholder = textarea.getAttribute('placeholder') || '';
-      return isVisible(textarea) && placeholder.includes('コメント');
+  const getCommentForm = () => {
+    return Array.from(document.querySelectorAll('form')).find((form) => {
+      const textarea = form.querySelector('textarea');
+      return textarea && isVisible(form) && isVisible(textarea);
     }) || null;
-  }
+  };
 
-  function findCommentForm() {
-    const textarea = findCommentTextarea();
-    if (!textarea) return null;
+  const getMenuWrap = () => {
+    const form = getCommentForm();
+    return form ? form.querySelector('.tw-comment-post-menu-others') : null;
+  };
 
-    return textarea.closest('form');
-  }
+  const getMenuButton = () => {
+    const wrap = getMenuWrap();
+    return wrap ? wrap.querySelector('button') : null;
+  };
 
-  function findCommentMenuWrap() {
-    const form = findCommentForm();
-    if (!form) return null;
-
-    return form.querySelector('.tw-comment-post-menu-others');
-  }
-
-  function findCommentMenuButton() {
-    const wrap = findCommentMenuWrap();
+  const findMenuItem = (texts) => {
+    const wrap = getMenuWrap();
     if (!wrap) return null;
 
-    return (
-      wrap.querySelector('button[aria-label="その他"]') ||
-      wrap.querySelector('button[aria-haspopup="true"]') ||
-      wrap.querySelector('button')
-    );
-  }
+    const targets = texts.map(norm);
 
-  function findClickableTextItemInCommentMenu(text) {
-    const wrap = findCommentMenuWrap();
-    if (!wrap) return null;
+    return Array.from(wrap.querySelectorAll('a, button'))
+      .filter(isVisible)
+      .find((el) => targets.includes(norm(el.textContent))) || null;
+  };
 
-    const target = normalizeText(text);
-
-    // まず本命。クリックできる a / button だけを探す
-    const clickableItems = Array.from(wrap.querySelectorAll('a, button'))
-      .filter(isVisible);
-
-    const direct = clickableItems.find((el) => {
-      return normalizeText(el.textContent) === target;
-    });
-
-    if (direct) {
-      log('direct clickable item found:', direct);
-      return direct;
-    }
-
-    // 保険。li/spanに文字が入っていた場合、その中のa/buttonを返す
-    const textHolders = Array.from(wrap.querySelectorAll('li, span'))
-      .filter(isVisible);
-
-    const holder = textHolders.find((el) => {
-      return normalizeText(el.textContent) === target;
-    });
-
-    if (!holder) return null;
-
-    const childClickable = holder.querySelector('a, button');
-    if (childClickable) {
-      log('child clickable item found:', childClickable);
-      return childClickable;
-    }
-
-    const parentClickable = holder.closest('a, button');
-    if (parentClickable) {
-      log('parent clickable item found:', parentClickable);
-      return parentClickable;
-    }
-
-    // li自体は原則クリックしない
-    log('text found but no clickable element:', holder);
-    return null;
-  }
-
-  function logMenuTexts() {
-    const wrap = findCommentMenuWrap();
-
-    if (!wrap) {
-      log('comment menu wrap: null');
-      return;
-    }
-
-    const texts = Array.from(wrap.querySelectorAll('a, button, li, span'))
-      .map((el) => normalizeText(el.textContent))
-      .filter(Boolean);
-
-    log('comment menu texts:', texts);
-  }
-
-  function closeMenu(menuButton) {
-    if (menuButton && menuButton.getAttribute('aria-expanded') === 'true') {
-      clickOnce(menuButton);
+  const closeMenu = (button) => {
+    if (button && button.getAttribute('aria-expanded') === 'true') {
+      button.click();
       return;
     }
 
@@ -185,79 +96,59 @@
       keyCode: 27,
       bubbles: true
     }));
-  }
+  };
 
-  function tryEnableAnonymous() {
+  const run = () => {
     if (done || working) return;
 
     tries++;
-    log('try:', tries);
 
-    if (!isAnonymousAllowed()) {
+    const app = document.querySelector('#comment-list-app');
+    if (app && app.dataset.isAnonymousCommentAllowed === 'false') {
       done = true;
       return;
     }
 
-    const form = findCommentForm();
-    log('comment form:', form);
+    const button = getMenuButton();
 
-    const menuButton = findCommentMenuButton();
-    log('comment menu button:', menuButton);
-
-    if (!menuButton) {
-      if (tries < MAX_TRIES) {
-        setTimeout(tryEnableAnonymous, RETRY_MS);
-      }
+    if (!button) {
+      if (tries < MAX_TRIES) setTimeout(run, RETRY_MS);
       return;
     }
 
     working = true;
 
-    log('opening comment menu. before expanded:', menuButton.getAttribute('aria-expanded'));
-
-    if (menuButton.getAttribute('aria-expanded') !== 'true') {
-      clickOnce(menuButton);
+    if (button.getAttribute('aria-expanded') !== 'true') {
+      button.click();
     }
 
     setTimeout(() => {
-      log('after expanded:', menuButton.getAttribute('aria-expanded'));
-      logMenuTexts();
-
-      const offItem = findClickableTextItemInCommentMenu(TEXT_OFF);
-
-      if (offItem) {
-        log('anonymous already ON.');
-        closeMenu(menuButton);
+      if (findMenuItem(OFF_TEXTS)) {
+        closeMenu(button);
         done = true;
         working = false;
         return;
       }
 
-      const onItem = findClickableTextItemInCommentMenu(TEXT_ON);
+      const onItem = findMenuItem(ON_TEXTS);
 
       if (!onItem) {
-        log('anonymous ON item not found.');
-        closeMenu(menuButton);
+        closeMenu(button);
         working = false;
 
-        if (tries < MAX_TRIES) {
-          setTimeout(tryEnableAnonymous, RETRY_MS);
-        }
-
+        if (tries < MAX_TRIES) setTimeout(run, RETRY_MS);
         return;
       }
 
-      log('click anonymous ON item:', onItem);
-      clickOnce(onItem);
+      onItem.click();
 
       setTimeout(() => {
-        closeMenu(menuButton);
+        closeMenu(button);
         done = true;
         working = false;
-        log('finished.');
       }, 300);
     }, MENU_WAIT_MS);
-  }
+  };
 
-  setTimeout(tryEnableAnonymous, 1000);
+  setTimeout(run, 1000);
 })();
