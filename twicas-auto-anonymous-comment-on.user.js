@@ -4,12 +4,14 @@
 // @description  ツイキャスの配信ページで匿名コメントを自動でONにします。X投稿チェックは操作しません。
 // @description:en Automatically enables anonymous comments on TwitCasting live pages. Does not touch the X post checkbox.
 // @namespace    https://github.com/CKYlab/twicas-auto-anonymous-comment-on
-// @version      0.1.2
+// @version      0.1.3
 // @license      MIT
 // @match        https://twitcasting.tv/*
 // @match        https://ja.twitcasting.tv/*
-// @run-at       document-idle
 // @grant        none
+// @run-at       document-idle
+// @homepageURL  https://github.com/CKYlab/twicas-auto-anonymous-comment-on
+// @supportURL   https://github.com/CKYlab/twicas-auto-anonymous-comment-on/issues
 // ==/UserScript==
 
 (() => {
@@ -21,7 +23,9 @@
 
   const MAX_TRIES = 30;
   const RETRY_MS = 700;
-  const MENU_WAIT_MS = 500;
+  const MENU_WAIT_MS = 300;
+  const ITEM_RECHECK_COUNT = 5;
+  const ITEM_RECHECK_MS = 150;
 
   const ON_TEXTS = [
     '匿名コメントをONにする',
@@ -109,6 +113,30 @@
     }));
   };
 
+  const findAnonymousState = async () => {
+    for (let i = 0; i < ITEM_RECHECK_COUNT; i++) {
+      const offItem = findMenuItem(OFF_TEXTS);
+      if (offItem) {
+        return { state: 'already-on', item: offItem };
+      }
+
+      const onItem = findMenuItem(ON_TEXTS);
+      if (onItem) {
+        return { state: 'can-enable', item: onItem };
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, ITEM_RECHECK_MS));
+    }
+
+    const menuTexts = getMenuTexts();
+
+    if (menuTexts.length > 0) {
+      return { state: 'unavailable', item: null };
+    }
+
+    return { state: 'not-ready', item: null };
+  };
+
   const run = () => {
     if (done || working) return;
 
@@ -133,40 +161,39 @@
       button.click();
     }
 
-    setTimeout(() => {
-      if (findMenuItem(OFF_TEXTS)) {
+    setTimeout(async () => {
+      const result = await findAnonymousState();
+
+      if (result.state === 'already-on') {
         closeMenu(button);
         done = true;
         working = false;
         return;
       }
 
-      const onItem = findMenuItem(ON_TEXTS);
+      if (result.state === 'can-enable') {
+        result.item.click();
 
-      if (!onItem) {
-        const menuTexts = getMenuTexts();
-
-        closeMenu(button);
-        working = false;
-
-        // メニュー自体は開けているのに匿名項目が無い場合は、
-        // 自分の配信ページなど匿名切替が無い画面と判断して停止する
-        if (menuTexts.length > 0) {
+        setTimeout(() => {
+          closeMenu(button);
           done = true;
-          return;
-        }
+          working = false;
+        }, 300);
 
-        if (tries < MAX_TRIES) setTimeout(run, RETRY_MS);
         return;
       }
 
-      onItem.click();
+      closeMenu(button);
+      working = false;
 
-      setTimeout(() => {
-        closeMenu(button);
+      if (result.state === 'unavailable') {
         done = true;
-        working = false;
-      }, 300);
+        return;
+      }
+
+      if (tries < MAX_TRIES) {
+        setTimeout(run, RETRY_MS);
+      }
     }, MENU_WAIT_MS);
   };
 
