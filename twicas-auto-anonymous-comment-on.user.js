@@ -4,7 +4,7 @@
 // @description  ツイキャスの配信ページで匿名コメントを自動でONにします。X投稿チェックは操作しません。
 // @description:en Automatically enables anonymous comments on TwitCasting live pages. Does not touch the X post checkbox.
 // @namespace    https://github.com/CKYlab/twicas-auto-anonymous-comment-on
-// @version      0.1.1
+// @version      0.1.2
 // @license      MIT
 // @match        https://twitcasting.tv/*
 // @match        https://ja.twitcasting.tv/*
@@ -45,6 +45,7 @@
 
   const isVisible = (el) => {
     if (!el) return false;
+
     const style = getComputedStyle(el);
     const rect = el.getBoundingClientRect();
 
@@ -71,6 +72,16 @@
   const getMenuButton = () => {
     const wrap = getMenuWrap();
     return wrap ? wrap.querySelector('button') : null;
+  };
+
+  const getMenuTexts = () => {
+    const wrap = getMenuWrap();
+    if (!wrap) return [];
+
+    return Array.from(wrap.querySelectorAll('a, button'))
+      .filter(isVisible)
+      .map((el) => norm(el.textContent))
+      .filter(Boolean);
   };
 
   const findMenuItem = (texts) => {
@@ -133,8 +144,17 @@
       const onItem = findMenuItem(ON_TEXTS);
 
       if (!onItem) {
+        const menuTexts = getMenuTexts();
+
         closeMenu(button);
         working = false;
+
+        // メニュー自体は開けているのに匿名項目が無い場合は、
+        // 自分の配信ページなど匿名切替が無い画面と判断して停止する
+        if (menuTexts.length > 0) {
+          done = true;
+          return;
+        }
 
         if (tries < MAX_TRIES) setTimeout(run, RETRY_MS);
         return;
